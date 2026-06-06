@@ -78,6 +78,37 @@ resolve_version() {
     log "version: ${VERSION}"
 }
 
+# Download a release asset with a 30s timeout. If the direct GitHub link is
+# unreachable / too slow, transparently fall back to the ghproxy.net mirror.
+#   $1 = relative or absolute URL (full https://github.com/... recommended)
+#   $2 = output path
+fetch_asset() {
+    local url="$1" out="$2"
+    local attempt=0
+    local urls="
+${url}
+https://ghproxy.net/${url}
+"
+
+    # We can't use `set -e` short-circuiting cleanly with retries, so loop.
+    while [ "${attempt}" -lt 2 ]; do
+        attempt=$((attempt + 1))
+        local current
+        current=$(printf '%s' "${urls}" | sed -n "${attempt}p")
+        log "downloading (attempt ${attempt}/2, timeout 30s) ${current}"
+        if curl -fsSL --connect-timeout 10 --max-time 30 \
+                -o "${out}" "${current}"; then
+            return 0
+        fi
+        warn "download failed via ${current}"
+        if [ "${attempt}" -lt 2 ]; then
+            log "retrying via ghproxy.net mirror"
+        fi
+    done
+
+    return 1
+}
+
 download_and_install() {
     local os="$1" arch="$2"
     # current CI only publishes linux/amd64; keep the matrix so future archs work.
@@ -86,13 +117,13 @@ download_and_install() {
     local asset="${BIN_NAME}_${VERSION}_${target_os}_${target_arch}.tar.gz"
     local url="https://github.com/${GITHUB_REPO}/releases/download/${VERSION}/${asset}"
 
-    log "downloading ${url}"
-    curl -fsSL -o "${TMP_DIR}/${asset}" "${url}" \
-        || err "download failed — make sure ${asset} exists in release ${VERSION}"
+    fetch_asset "${url}" "${TMP_DIR}/${asset}" \
+        || err "download failed — tried direct GitHub URL and ghproxy.net mirror"
 
     log "verifying checksum (if checksums.txt is published)"
-    if curl -fsSL -o "${TMP_DIR}/checksums.txt" \
-        "https://github.com/${GITHUB_REPO}/releases/download/${VERSION}/checksums.txt" 2>/dev/null; then
+    if fetch_asset \
+        "https://github.com/${GITHUB_REPO}/releases/download/${VERSION}/checksums.txt" \
+        "${TMP_DIR}/checksums.txt" 2>/dev/null; then
         ( cd "${TMP_DIR}" && sha256sum -c --ignore-missing checksums.txt ) \
             || err "checksum verification failed"
     else
