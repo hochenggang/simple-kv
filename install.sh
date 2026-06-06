@@ -6,9 +6,11 @@
 #   curl -fsSL https://raw.githubusercontent.com/hochenggang/simple-kv/main/install.sh | sh
 #   curl -fsSL .../install.sh | sh -s -- v0.1.0
 #   sudo sh install.sh -z ./simple-kv_v0.1.0_linux_amd64.tar.gz   # offline install
+#   sudo sh install.sh -d                                          # upgrade to latest release
 #
 # Environment variables consumed by the service (read from /etc/simple-kv/simple-kv.env):
 #   KV_PORT        listen port (default 8080)
+#   KV_DATA_DIR    sqlite database directory (default ./data)
 #   KV_AUTH_TOKEN  optional bearer token
 
 set -eu
@@ -26,6 +28,7 @@ TMP_DIR="$(mktemp -d)"
 
 # Populated by parse_args().
 LOCAL_TARBALL=""
+UPGRADE_ONLY=0
 
 # ---- helpers ---------------------------------------------------------------
 
@@ -83,13 +86,14 @@ resolve_version() {
         return 0
     fi
 
-    if [ "${1:-}" ]; then
-        VERSION="$1"
-    else
+    # -d always pulls the latest release from GitHub, ignoring any version arg.
+    if [ "${UPGRADE_ONLY}" = "1" ] || [ -z "${1:-}" ]; then
         log "resolving latest release from GitHub..."
         VERSION=$(curl -fsSL "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" \
             | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)
         [ -n "${VERSION}" ] || err "could not determine latest release"
+    else
+        VERSION="$1"
     fi
     log "version: ${VERSION}"
 }
@@ -429,23 +433,30 @@ Usage: install.sh [options] [version]
 Options:
   -z <path>   Install from a local tarball (e.g. ./simple-kv_v0.1.0_linux_amd64.tar.gz).
               Skips all network requests.
+  -d          Upgrade mode: pull the latest release from GitHub, replace the
+              installed binary, and restart the service. Skips user creation
+              and config prompts; existing /etc/simple-kv and /var/lib/simple-kv
+              are left untouched.
   -h          Show this help.
 
 Positional:
   version     Optional release tag (e.g. v0.1.0). Ignored when -z is used.
+              In -d mode the version is always the latest GitHub release.
 
 Examples:
   curl -fsSL https://.../install.sh | sudo sh
   curl -fsSL https://.../install.sh | sudo sh -s -- v0.1.0
+  sudo sh install.sh -d
   sudo sh install.sh -z ./simple-kv_v0.1.0_linux_amd64.tar.gz
 EOF
 }
 
 parse_args() {
     REQUESTED_VERSION=""
-    while getopts ":z:h" opt; do
+    while getopts ":z:dh" opt; do
         case "${opt}" in
             z) LOCAL_TARBALL="${OPTARG}" ;;
+            d) UPGRADE_ONLY=1 ;;
             h) print_usage; exit 0 ;;
             :) err "option -${OPTARG} requires an argument" ;;
             \?) err "unknown option: -${OPTARG}" ;;
@@ -454,6 +465,9 @@ parse_args() {
     shift $((OPTIND - 1))
     if [ "${1:-}" ]; then
         REQUESTED_VERSION="$1"
+    fi
+    if [ "${UPGRADE_ONLY}" = "1" ] && [ -n "${LOCAL_TARBALL}" ]; then
+        err "-d and -z are mutually exclusive"
     fi
 }
 
@@ -473,8 +487,17 @@ main() {
     if [ -n "${LOCAL_TARBALL}" ]; then
         log "mode: offline (local tarball)"
     fi
+    if [ "${UPGRADE_ONLY}" = "1" ]; then
+        log "mode: upgrade (replace binary with latest GitHub release)"
+        # Make sure the service unit itself exists; user/dirs are assumed to
+        # already be in place from a prior install.
+        if [ ! -f "${INSTALL_DIR}/${BIN_NAME}" ]; then
+            err "no existing install at ${INSTALL_DIR}/${BIN_NAME} — run without -d first"
+        fi
+    else
+        create_service_user_and_dirs
+    fi
 
-    create_service_user_and_dirs
     resolve_version "${REQUESTED_VERSION}"
     ensure_config
     download_and_install "${os}" "${arch}"
@@ -484,6 +507,30 @@ main() {
         openrc)  install_openrc ;;
         *) err "unsupported init: ${init}" ;;
     esac
+
+    if [ "${UPGRADE_ONLY}" = "1" ]; then
+        # Force-restart the service in upgrade mode (in case it was stopped,
+        # or to pick up the new binary). Both init scripts restart-on-active
+        # only, so we trigger an explicit start/restart here.
+        case "${init}" in
+            systemd)
+                if systemctl is-active --quiet "${SERVICE_NAME}.service"; then
+                    log "restarting service (upgrade)"
+                    systemctl restart "${SERVICE_NAME}.service"
+                else
+                    log "starting service (upgrade)"
+                    systemctl start "${SERVICE_NAME}.service"
+                fi
+                ;;
+            openrc)
+                if rc-service --exists "${SERVICE_NAME}" 2>/dev/null; then
+                    log "restarting service (upgrade)"
+                    rc-service "${SERVICE_NAME}" restart >/dev/null 2>&1 || \
+                        rc-service "${SERVICE_NAME}" start
+                fi
+                ;;
+        esac
+    fi
 
     log "done. Edit ${CONFIG_FILE} and restart the service to change settings."
 }

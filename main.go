@@ -17,7 +17,9 @@ func main() {
 		port = "8080"
 	}
 
-	handler := authMiddleware(mux)
+	// corsMiddleware is wrapped outermost so OPTIONS preflight is answered
+	// without going through auth. The chain is: cors -> auth -> mux.
+	handler := corsMiddleware(authMiddleware(mux))
 
 	log.Printf("KV API listening on :%s", port)
 	log.Fatal(http.ListenAndServe(":"+port, handler))

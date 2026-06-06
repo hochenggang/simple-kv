@@ -48,6 +48,11 @@ curl -fsSL https://raw.githubusercontent.com/hochenggang/simple-kv/main/install.
   ```
 
   版本号会从文件名 `simple-kv_<ver>_<os>_<arch>.tar.gz` 中自动解析。
+- 升级到最新发行版（保留现有配置和数据库，只替换二进制并重启服务）：
+
+  ```bash
+  sudo sh install.sh -d
+  ```
 
 管理命令：
 
@@ -98,6 +103,8 @@ go build -o simple-kv .
 ## API
 
 所有接口返回 `Content-Type: text/plain; charset=utf-8`。
+
+所有响应携带 CORS 头（`Access-Control-Allow-Origin: *`，允许 `GET / PUT / DELETE / OPTIONS`），浏览器跨域可直接调用；预检 `OPTIONS` 请求会直接以 `204` 短路返回，不会走到鉴权。
 
 ### `GET /{db}/{key}`
 读取键值。
