@@ -36,7 +36,8 @@ curl -fsSL https://raw.githubusercontent.com/hochenggang/simple-kv/main/install.
 ```
 
 - 首次安装会交互式询问监听端口，回车使用默认 **18100**。
-- 服务以 `nobody` 用户运行，从 `/etc/simple-kv/simple-kv.env` 读取 `KV_PORT` / `KV_AUTH_TOKEN`。
+- 自动创建无登录权限的系统用户 `simple-kv`，数据落在 `/var/lib/simple-kv/data`，配置在 `/etc/simple-kv/`（也归该用户所有，方便 OpenRC 在服务用户身份下 source 环境文件）。
+- 服务以 `simple-kv:simple-kv` 运行（systemd 同时设 `WorkingDirectory=/var/lib/simple-kv`）。
 - 再次执行即为升级：停止旧服务 → 替换二进制 → 重新拉起，**保留现有配置**。
 - 非交互安装（`curl ... | sh`）默认使用端口 18100。
 - 指定版本：`curl -fsSL .../install.sh | sudo sh -s -- v0.1.0`

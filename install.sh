@@ -15,6 +15,9 @@ set -eu
 
 GITHUB_REPO="hochenggang/simple-kv"
 BIN_NAME="simple-kv"
+SVC_USER="${BIN_NAME}"            # unprivileged system user
+SVC_GROUP="${BIN_NAME}"           # group with the same name
+DATA_DIR="/var/lib/${BIN_NAME}"   # WorkingDirectory + base for KV_DATA_DIR
 INSTALL_DIR="/usr/local/bin"
 CONFIG_DIR="/etc/${BIN_NAME}"
 CONFIG_FILE="${CONFIG_DIR}/${BIN_NAME}.env"
@@ -167,6 +170,86 @@ download_and_install() {
     log "installed binary to ${INSTALL_DIR}/${BIN_NAME}"
 }
 
+# ---- service user / dirs ---------------------------------------------------
+
+# Create a dedicated system user with no shell, no home, no password, and a
+# matching primary group. Idempotent: if the user already exists, leave it.
+# Also prepares ${DATA_DIR} and chowns ${CONFIG_DIR} to that user.
+create_service_user_and_dirs() {
+    local nologin_shell=""
+    if [ -f /etc/alpine-release ]; then
+        # BusyBox adduser flags: -S system, -D no password, -H no home, -s shell
+        # NB: -g is GECOS, -G is primary group. They are different!
+        nologin_shell="/sbin/nologin"
+
+        # Make sure the group exists first; BusyBox adduser -G requires an
+        # existing group. addgroup -S creates a system group.
+        if ! getent group "${SVC_GROUP}" >/dev/null 2>&1; then
+            log "creating system group ${SVC_GROUP} (Alpine)"
+            addgroup -S "${SVC_GROUP}" \
+                || err "failed to create system group ${SVC_GROUP}"
+        else
+            log "system group ${SVC_GROUP} already exists"
+        fi
+
+        if ! id "${SVC_USER}" >/dev/null 2>&1; then
+            log "creating system user ${SVC_USER} (Alpine)"
+            adduser -S -D -H \
+                -s "${nologin_shell}" \
+                -G "${SVC_GROUP}" \
+                -g "simple-kv service account" \
+                "${SVC_USER}" \
+                || err "failed to create system user ${SVC_USER}"
+        else
+            log "system user ${SVC_USER} already exists"
+        fi
+    else
+        # shadow-utils useradd. --system picks a low UID/GID, --no-create-home
+        # avoids /home, --shell prevents login. --user-group creates a same-named
+        # primary group if it doesn't already exist.
+        if command -v nologin >/dev/null 2>&1; then
+            nologin_shell="$(command -v nologin)"
+        elif [ -x /usr/sbin/nologin ]; then
+            nologin_shell="/usr/sbin/nologin"
+        elif [ -x /bin/false ]; then
+            nologin_shell="/bin/false"
+        else
+            nologin_shell="/usr/sbin/nologin"
+        fi
+
+        if ! id "${SVC_USER}" >/dev/null 2>&1; then
+            log "creating system user ${SVC_USER}"
+            useradd --system \
+                --no-create-home \
+                --home-dir "${DATA_DIR}" \
+                --shell "${nologin_shell}" \
+                --user-group \
+                --comment "simple-kv service account" \
+                "${SVC_USER}" \
+                || err "failed to create system user ${SVC_USER}"
+        else
+            log "system user ${SVC_USER} already exists"
+            # Make sure the existing account has no valid login shell either.
+            current_shell=$(getent passwd "${SVC_USER}" | cut -d: -f7)
+            case "${current_shell}" in
+                */nologin|/bin/false|/usr/sbin/nologin|/sbin/nologin) : ;;
+                *) warn "existing ${SVC_USER} has login shell '${current_shell}'; not changing it" ;;
+            esac
+        fi
+    fi
+
+    install -d -m 0750 -o "${SVC_USER}" -g "${SVC_GROUP}" "${DATA_DIR}"
+    log "data dir ${DATA_DIR} owned by ${SVC_USER}:${SVC_GROUP}"
+
+    # CONFIG_DIR is what users edit; grant the service user ownership so its
+    # files (env file, future TLS material, ...) are readable in the OpenRC
+    # flow that sources the env file as the service user.
+    if [ -d "${CONFIG_DIR}" ]; then
+        chown -R "${SVC_USER}:${SVC_GROUP}" "${CONFIG_DIR}"
+        log "chowned ${CONFIG_DIR} to ${SVC_USER}:${SVC_GROUP}"
+    fi
+}
+
 # ---- config ----------------------------------------------------------------
 
 DEFAULT_PORT=18100
@@ -222,10 +305,11 @@ ensure_config() {
         cat > "${CONFIG_FILE}" <<EOF
 # simple-kv service environment
 KV_PORT=${port}
+KV_DATA_DIR=${DATA_DIR}/data
 # KV_AUTH_TOKEN=change-me
 EOF
         chmod 0640 "${CONFIG_FILE}"
-        log "created ${CONFIG_FILE} (KV_PORT=${port})"
+        log "created ${CONFIG_FILE} (KV_PORT=${port}, KV_DATA_DIR=${DATA_DIR}/data)"
     fi
 }
 
@@ -244,11 +328,12 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=-${CONFIG_FILE}
+WorkingDirectory=${DATA_DIR}
 ExecStart=${INSTALL_DIR}/${BIN_NAME}
 Restart=on-failure
 RestartSec=3
-User=nobody
-Group=nogroup
+User=${SVC_USER}
+Group=${SVC_GROUP}
 NoNewPrivileges=true
 ProtectSystem=full
 ProtectHome=true
@@ -258,10 +343,6 @@ LimitNOFILE=65535
 [Install]
 WantedBy=multi-user.target
 EOF
-
-    if id nobody >/dev/null 2>&1 && getent group nogroup >/dev/null 2>&1; then
-        : # default user/group are fine
-    fi
 
     systemctl daemon-reload
     systemctl enable "${SERVICE_NAME}.service" >/dev/null
@@ -295,9 +376,10 @@ name="\${RC_SVCNAME}"
 description="simple-kv HTTP KV store"
 command="${INSTALL_DIR}/${BIN_NAME}"
 command_args=""
-command_user="nobody:nobody"
+command_user="${SVC_USER}:${SVC_GROUP}"
 command_background="yes"
 pidfile="/run/\${RC_SVCNAME}.pid"
+directory="${DATA_DIR}"
 
 start_pre() {
     if [ -f "${CONFIG_FILE}" ]; then
@@ -309,7 +391,10 @@ start_pre() {
     if [ -z "\${KV_PORT}" ]; then
         KV_PORT=8080
     fi
-    export KV_PORT KV_AUTH_TOKEN
+    if [ -z "\${KV_DATA_DIR}" ]; then
+        KV_DATA_DIR="${DATA_DIR}/data"
+    fi
+    export KV_PORT KV_AUTH_TOKEN KV_DATA_DIR
 }
 
 depend() {
@@ -389,6 +474,7 @@ main() {
         log "mode: offline (local tarball)"
     fi
 
+    create_service_user_and_dirs
     resolve_version "${REQUESTED_VERSION}"
     ensure_config
     download_and_install "${os}" "${arch}"
