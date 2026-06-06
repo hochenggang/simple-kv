@@ -29,7 +29,7 @@ func validateName(name string) error {
 }
 
 func getDataDir() string {
-	dir := os.Getenv("DATA_DIR")
+	dir := os.Getenv("KV_DATA_DIR")
 	if dir == "" {
 		dir = "./data"
 	}

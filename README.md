@@ -7,7 +7,7 @@
 - 纯 Go 实现，无 CGO 依赖，**单一静态二进制**即可在 glibc 与 musl（Alpine）系统上运行
 - SQLite WAL 模式，单 DB 文件落盘，支持多数据库名隔离
 - 仅暴露 HTTP 端口，可直接被 CDN 回源调用
-- 可选 Bearer Token 鉴权（`AUTH_TOKEN` 环境变量）
+- 可选 Bearer Token 鉴权（`KV_AUTH_TOKEN` 环境变量）
 - 严格的输入校验：db / key 仅允许小写字母与数字，长度 1–10
 - value 限制为 50 KiB 纯文本
 
@@ -26,6 +26,33 @@ curl -X DELETE http://localhost:8080/mydb/mykey
 ```
 
 ## 安装
+
+### 推荐：一键安装（systemd / OpenRC）
+
+项目自带 [`install.sh`](./install.sh)，自动从 GitHub Releases 拉取最新版本、解压、注册为系统服务并拉起守护进程。适用于 Debian / Ubuntu / CentOS / RHEL / Arch（systemd）以及 Alpine（OpenRC）。
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hochenggang/simple-kv/main/install.sh | sudo sh
+```
+
+- 首次安装会交互式询问监听端口，回车使用默认 **18100**。
+- 服务以 `nobody` 用户运行，从 `/etc/simple-kv/simple-kv.env` 读取 `KV_PORT` / `KV_AUTH_TOKEN`。
+- 再次执行即为升级：停止旧服务 → 替换二进制 → 重新拉起，**保留现有配置**。
+- 非交互安装（`curl ... | sh`）默认使用端口 18100。
+- 指定版本：`curl -fsSL .../install.sh | sudo sh -s -- v0.1.0`
+
+管理命令：
+
+```bash
+# Debian/Ubuntu/CentOS/... (systemd)
+sudo systemctl status simple-kv
+sudo systemctl restart simple-kv
+sudo journalctl -u simple-kv -f
+
+# Alpine (OpenRC)
+sudo rc-service simple-kv status
+sudo rc-service simple-kv restart
+```
 
 ### 下载预编译二进制
 
@@ -56,9 +83,9 @@ go build -o simple-kv .
 
 | 变量名 | 默认值 | 说明 |
 |---|---|---|
-| `PORT` | `8080` | HTTP 监听端口 |
-| `DATA_DIR` | `./data` | 数据库文件存储目录 |
-| `AUTH_TOKEN` | 空（可选） | 若设置则启用 `Authorization: Bearer <token>` 鉴权 |
+| `KV_PORT` | `8080` | HTTP 监听端口 |
+| `KV_DATA_DIR` | `./data` | 数据库文件存储目录 |
+| `KV_AUTH_TOKEN` | 空（可选） | 若设置则启用 `Authorization: Bearer <token>` 鉴权 |
 
 ## API
 
