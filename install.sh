@@ -5,6 +5,7 @@
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/hochenggang/simple-kv/main/install.sh | sh
 #   curl -fsSL .../install.sh | sh -s -- v0.1.0
+#   sudo sh install.sh -z ./simple-kv_v0.1.0_linux_amd64.tar.gz   # offline install
 #
 # Environment variables consumed by the service (read from /etc/simple-kv/simple-kv.env):
 #   KV_PORT        listen port (default 8080)
@@ -19,6 +20,9 @@ CONFIG_DIR="/etc/${BIN_NAME}"
 CONFIG_FILE="${CONFIG_DIR}/${BIN_NAME}.env"
 SERVICE_NAME="${BIN_NAME}"
 TMP_DIR="$(mktemp -d)"
+
+# Populated by parse_args().
+LOCAL_TARBALL=""
 
 # ---- helpers ---------------------------------------------------------------
 
@@ -67,6 +71,15 @@ detect_init() {
 # ---- download --------------------------------------------------------------
 
 resolve_version() {
+    if [ -n "${LOCAL_TARBALL}" ]; then
+        # Extract version from the filename: simple-kv_<ver>_<os>_<arch>.tar.gz
+        VERSION=$(basename "${LOCAL_TARBALL}" \
+            | sed -n 's/^simple-kv_\(v[^_]*\)_.*/\1/p')
+        [ -n "${VERSION}" ] || err "could not extract version from LOCAL_TARBALL='${LOCAL_TARBALL}' (expected pattern: simple-kv_<ver>_<os>_<arch>.tar.gz)"
+        log "version (from local tarball): ${VERSION}"
+        return 0
+    fi
+
     if [ "${1:-}" ]; then
         VERSION="$1"
     else
@@ -84,7 +97,8 @@ resolve_version() {
 #   $2 = output path
 fetch_asset() {
     local url="$1" out="$2"
-    local mirror="https://ghproxy.net/${url}"
+    local simple-kv_v0.1.0_linux_amd64.tar.gz
+="https://ghproxy.net/${url}"
     local attempt=0
     local max_attempts=2
     local current=""
@@ -122,17 +136,23 @@ download_and_install() {
     local asset="${BIN_NAME}_${VERSION}_${target_os}_${target_arch}.tar.gz"
     local url="https://github.com/${GITHUB_REPO}/releases/download/${VERSION}/${asset}"
 
-    fetch_asset "${url}" "${TMP_DIR}/${asset}" \
-        || err "download failed — tried direct GitHub URL and ghproxy.net mirror"
-
-    log "verifying checksum (if checksums.txt is published)"
-    if fetch_asset \
-        "https://github.com/${GITHUB_REPO}/releases/download/${VERSION}/checksums.txt" \
-        "${TMP_DIR}/checksums.txt" 2>/dev/null; then
-        ( cd "${TMP_DIR}" && sha256sum -c --ignore-missing checksums.txt ) \
-            || err "checksum verification failed"
+    if [ -n "${LOCAL_TARBALL}" ]; then
+        log "offline install mode: using local tarball ${LOCAL_TARBALL}"
+        [ -f "${LOCAL_TARBALL}" ] || err "local tarball not found: ${LOCAL_TARBALL}"
+        cp -f "${LOCAL_TARBALL}" "${TMP_DIR}/${asset}"
     else
-        warn "checksums.txt not available — skipping verification"
+        fetch_asset "${url}" "${TMP_DIR}/${asset}" \
+            || err "download failed — tried direct GitHub URL and ghproxy.net mirror"
+
+        log "verifying checksum (if checksums.txt is published)"
+        if fetch_asset \
+            "https://github.com/${GITHUB_REPO}/releases/download/${VERSION}/checksums.txt" \
+            "${TMP_DIR}/checksums.txt" 2>/dev/null; then
+            ( cd "${TMP_DIR}" && sha256sum -c --ignore-missing checksums.txt ) \
+                || err "checksum verification failed"
+        else
+            warn "checksums.txt not available — skipping verification"
+        fi
     fi
 
     log "extracting"
@@ -312,9 +332,50 @@ EOF
     fi
 }
 
+# ---- arg parsing ------------------------------------------------------------
+
+# Usage: parse_args "$@"
+# Sets globals: LOCAL_TARBALL, REQUESTED_VERSION
+# Leaves the version positional in $1 for backwards compatibility.
+print_usage() {
+    cat >&2 <<EOF
+Usage: install.sh [options] [version]
+
+Options:
+  -z <path>   Install from a local tarball (e.g. ./simple-kv_v0.1.0_linux_amd64.tar.gz).
+              Skips all network requests.
+  -h          Show this help.
+
+Positional:
+  version     Optional release tag (e.g. v0.1.0). Ignored when -z is used.
+
+Examples:
+  curl -fsSL https://.../install.sh | sudo sh
+  curl -fsSL https://.../install.sh | sudo sh -s -- v0.1.0
+  sudo sh install.sh -z ./simple-kv_v0.1.0_linux_amd64.tar.gz
+EOF
+}
+
+parse_args() {
+    REQUESTED_VERSION=""
+    while getopts ":z:h" opt; do
+        case "${opt}" in
+            z) LOCAL_TARBALL="${OPTARG}" ;;
+            h) print_usage; exit 0 ;;
+            :) err "option -${OPTARG} requires an argument" ;;
+            \?) err "unknown option: -${OPTARG}" ;;
+        esac
+    done
+    shift $((OPTIND - 1))
+    if [ "${1:-}" ]; then
+        REQUESTED_VERSION="$1"
+    fi
+}
+
 # ---- main ------------------------------------------------------------------
 
 main() {
+    parse_args "$@"
     require_root
 
     local os init
@@ -324,8 +385,11 @@ main() {
     init=$(detect_init)
 
     log "detected: os=${os} arch=${arch} init=${init}"
+    if [ -n "${LOCAL_TARBALL}" ]; then
+        log "mode: offline (local tarball)"
+    fi
 
-    resolve_version "${1:-}"
+    resolve_version "${REQUESTED_VERSION}"
     ensure_config
     download_and_install "${os}" "${arch}"
 

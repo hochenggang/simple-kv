@@ -40,6 +40,13 @@ curl -fsSL https://raw.githubusercontent.com/hochenggang/simple-kv/main/install.
 - 再次执行即为升级：停止旧服务 → 替换二进制 → 重新拉起，**保留现有配置**。
 - 非交互安装（`curl ... | sh`）默认使用端口 18100。
 - 指定版本：`curl -fsSL .../install.sh | sudo sh -s -- v0.1.0`
+- 内网/离线安装（跳过所有网络请求，传入本地 tarball）：
+
+  ```bash
+  sudo sh install.sh -z ./simple-kv_v0.1.0_linux_amd64.tar.gz
+  ```
+
+  版本号会从文件名 `simple-kv_<ver>_<os>_<arch>.tar.gz` 中自动解析。
 
 管理命令：
 
