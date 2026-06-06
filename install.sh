@@ -104,8 +104,7 @@ resolve_version() {
 #   $2 = output path
 fetch_asset() {
     local url="$1" out="$2"
-    local simple-kv_v0.1.0_linux_amd64.tar.gz
-="https://ghproxy.net/${url}"
+    local mirror="https://ghproxy.net/${url}"
     local attempt=0
     local max_attempts=2
     local current=""
