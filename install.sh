@@ -80,28 +80,33 @@ resolve_version() {
 
 # Download a release asset with a 30s timeout. If the direct GitHub link is
 # unreachable / too slow, transparently fall back to the ghproxy.net mirror.
-#   $1 = relative or absolute URL (full https://github.com/... recommended)
+#   $1 = full https://github.com/... URL
 #   $2 = output path
 fetch_asset() {
     local url="$1" out="$2"
+    local mirror="https://ghproxy.net/${url}"
     local attempt=0
-    local urls="
-${url}
-https://ghproxy.net/${url}
-"
+    local max_attempts=2
+    local current=""
+    local label=""
 
-    # We can't use `set -e` short-circuiting cleanly with retries, so loop.
-    while [ "${attempt}" -lt 2 ]; do
+    while [ "${attempt}" -lt "${max_attempts}" ]; do
         attempt=$((attempt + 1))
-        local current
-        current=$(printf '%s' "${urls}" | sed -n "${attempt}p")
-        log "downloading (attempt ${attempt}/2, timeout 30s) ${current}"
+        if [ "${attempt}" -eq 1 ]; then
+            current="${url}"
+            label="direct GitHub URL"
+        else
+            current="${mirror}"
+            label="ghproxy.net mirror"
+        fi
+
+        log "downloading (attempt ${attempt}/${max_attempts}, timeout 30s) via ${label}"
         if curl -fsSL --connect-timeout 10 --max-time 30 \
                 -o "${out}" "${current}"; then
             return 0
         fi
-        warn "download failed via ${current}"
-        if [ "${attempt}" -lt 2 ]; then
+        warn "download failed via ${label}: ${current}"
+        if [ "${attempt}" -lt "${max_attempts}" ]; then
             log "retrying via ghproxy.net mirror"
         fi
     done
