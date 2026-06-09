@@ -40,19 +40,11 @@ jobs:
             go build -trimpath -ldflags="-s -w" \
             -o "simple-kv_${TAG}_linux_amd64" .
 
-      - name: Package tarball
-        env:
-          TAG: ${{ github.ref_name }}
-        run: |
-          tar -czf "simple-kv_${TAG}_linux_amd64.tar.gz" \
-            "simple-kv_${TAG}_linux_amd64"
-          rm "simple-kv_${TAG}_linux_amd64"
-
       - name: Generate checksums
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          sha256sum "simple-kv_${TAG}_linux_amd64.tar.gz" > checksums.txt
+          sha256sum "simple-kv_${TAG}_linux_amd64" > checksums.txt
           cat checksums.txt
 
       - name: Create GitHub Release
@@ -61,5 +53,5 @@ jobs:
           name: ${{ github.ref_name }}
           generate_release_notes: true
           files: |
-            simple-kv_${{ github.ref_name }}_linux_amd64.tar.gz
+            simple-kv_${{ github.ref_name }}_linux_amd64
             checksums.txt
