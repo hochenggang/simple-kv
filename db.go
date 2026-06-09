@@ -15,6 +15,14 @@ var (
 	dbMutex sync.Mutex
 )
 
+// maxDBMapSize 限制 dbMap 最大条目数，防止恶意/异常客户端用海量 db 名耗尽
+// 文件描述符与内存。超过此上限时新 db 名请求直接拒绝。
+const maxDBMapSize = 1000
+
+// ErrTooManyDBs 是 getDB 在达到 dbMap 上限时返回的哨兵错误，
+// handler 据此返回 400 Bad Request（视为客户端责任）。
+var ErrTooManyDBs = errors.New("too many databases: limit is 1000")
+
 // validateName 校验数据库名和键的通用规则：长度1-10，仅小写字母和数字
 func validateName(name string) error {
 	if len(name) == 0 || len(name) > 10 {
@@ -47,6 +55,11 @@ func getDB(name string) (*sql.DB, error) {
 
 	if db, ok := dbMap[name]; ok {
 		return db, nil
+	}
+
+	// 容量上限：避免恶意/异常 db 名耗尽 fd 与内存
+	if len(dbMap) >= maxDBMapSize {
+		return nil, ErrTooManyDBs
 	}
 
 	dataDir := getDataDir()

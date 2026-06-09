@@ -1,0 +1,188 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KV</title>
+    <style>
+        body { font-family: sans-serif; max-width: 500px; margin: 50px auto; padding: 20px; }
+        label { display: block; margin: 15px 0 5px; font-weight: bold; }
+        input { width: 100%; padding: 8px; box-sizing: border-box; }
+        button { margin-top: 20px; padding: 10px 20px; font-size: 16px; cursor: pointer; }
+        #result { margin-top: 20px; padding: 10px; background: #f5f5f5; border-radius: 5px; white-space: pre-wrap; word-break: break-all; }
+        #readBtn { margin-left: 10px; }
+        #deleteBtn { margin-left: 10px; }
+    </style>
+</head>
+<body>
+    <h2>Key-Value 测试</h2>
+    <form id="kvForm">
+        <label for="host">请求地址 (base URL)</label>
+        <input type="text" id="host" name="host" required placeholder="例如 https://kv.example.com">
+
+        <label for="password">密码 (Bearer Token)</label>
+        <input type="password" id="password" name="password" placeholder="输入鉴权令牌">
+
+        <label for="db">数据库 (db)</label>
+        <input type="text" id="db" name="db" required placeholder="例如 mydb">
+
+        <label for="key">键 (key)</label>
+        <input type="text" id="key" name="key" required placeholder="例如 mykey">
+
+        <label for="value">值 (value)</label>
+        <input type="text" id="value" name="value" placeholder="要保存的内容">
+
+        <label for="timeout">超时时间 (秒, 0=不过期)</label>
+        <input type="number" id="timeout" name="timeout" min="0" value="0" placeholder="默认 0 不过期">
+
+        <button type="submit">提交</button>
+        <button type="button" id="deleteBtn">删除</button>
+        <button type="button" id="readBtn">测试读取</button>
+    </form>
+    <div id="result"></div>
+
+    <script>
+        // 字段 id 与 localStorage key 的映射
+        const STORAGE_KEYS = {
+            host: 'kv_host',
+            password: 'kv_password',
+            db: 'kv_db',
+            key: 'kv_key',
+            value: 'kv_value',
+            timeout: 'kv_timeout',
+        };
+
+        // 页面加载时从 localStorage 恢复所有字段
+        (function () {
+            for (const [id, key] of Object.entries(STORAGE_KEYS)) {
+                const saved = localStorage.getItem(key);
+                if (saved !== null) {
+                    const el = document.getElementById(id);
+                    if (el) el.value = saved;
+                }
+            }
+        })();
+
+        const form = document.getElementById('kvForm');
+        const readBtn = document.getElementById('readBtn');
+        const deleteBtn = document.getElementById('deleteBtn');
+        const resultDiv = document.getElementById('result');
+
+        // 为所有 input 添加 @change 持久化：值非空时写入，空时清除
+        for (const id of Object.keys(STORAGE_KEYS)) {
+            const el = document.getElementById(id);
+            if (!el) continue;
+            const key = STORAGE_KEYS[id];
+            el.addEventListener('change', () => {
+                if (el.value) {
+                    localStorage.setItem(key, el.value);
+                } else {
+                    localStorage.removeItem(key);
+                }
+            });
+        }
+
+        // 辅助函数：获取表单数据（host 去掉尾部斜杠，timeout 兜底为 0）
+        function getFormData() {
+            const t = parseInt(document.getElementById('timeout').value, 10);
+            const timeout = Number.isFinite(t) && t >= 0 ? t : 0;
+            return {
+                host: document.getElementById('host').value.trim().replace(/\/+$/, ''),
+                password: document.getElementById('password').value.trim(),
+                db: document.getElementById('db').value.trim(),
+                key: document.getElementById('key').value.trim(),
+                value: document.getElementById('value').value,
+                timeout
+            };
+        }
+
+        // 辅助函数：转义 HTML
+        function escapeHtml(text) {
+            return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+
+        // 写入提交
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const { host, password, db, key, value, timeout } = getFormData();
+            resultDiv.textContent = '请求中...';
+            readBtn.style.display = 'none';  // 隐藏读取按钮
+
+            const url = `${host}/${encodeURIComponent(db)}/${encodeURIComponent(key)}`;
+            try {
+                const res = await fetch(url, {
+                    method: 'PUT',
+                    headers: {
+                        'Authorization': `Bearer ${password}`,
+                        'Content-Type': 'text/plain',
+                        'X-KV-Timeout': String(timeout)
+                    },
+                    body: value
+                });
+                if (res.ok) {
+                    resultDiv.innerHTML = `✅ 写入成功 (${res.status})`;
+                    readBtn.style.display = 'inline-block';  // 显示读取按钮
+                } else {
+                    resultDiv.textContent = `❌ 请求失败 (${res.status}): ${await res.text()}`;
+                }
+            } catch (err) {
+                resultDiv.textContent = `❌ 网络错误: ${err.message}`;
+            }
+        });
+
+        // 测试读取按钮
+        readBtn.addEventListener('click', async () => {
+            const { host, password, db, key } = getFormData();
+            const url = `${host}/${encodeURIComponent(db)}/${encodeURIComponent(key)}`;
+
+            resultDiv.textContent = '读取中...';
+            try {
+                const res = await fetch(url, {
+                    method: 'GET',
+                    headers: {
+                        'Authorization': `Bearer ${password}`
+                    }
+                });
+                if (res.ok) {
+                    const data = await res.text();
+                    resultDiv.innerHTML = `✅ 读取成功 (${res.status})<br>内容：${escapeHtml(data)}`;
+                } else {
+                    resultDiv.textContent = `❌ 读取失败 (${res.status}): ${await res.text()}`;
+                }
+            } catch (err) {
+                resultDiv.textContent = `❌ 网络错误: ${err.message}`;
+            }
+        });
+
+        // 删除按钮
+        deleteBtn.addEventListener('click', async () => {
+            const { host, password, db, key } = getFormData();
+            if (!db || !key) {
+                resultDiv.textContent = '❌ 请填写数据库和键名';
+                return;
+            }
+            const url = `${host}/${encodeURIComponent(db)}/${encodeURIComponent(key)}`;
+
+            resultDiv.textContent = '删除中...';
+            try {
+                const res = await fetch(url, {
+                    method: 'DELETE',
+                    headers: {
+                        'Authorization': `Bearer ${password}`
+                    }
+                });
+                if (res.ok) {
+                    resultDiv.innerHTML = `✅ 删除成功 (${res.status})`;
+                    // 删除成功后隐藏读取按钮（因为键已不存在）
+                    readBtn.style.display = 'none';
+                } else {
+                    resultDiv.textContent = `❌ 删除失败 (${res.status}): ${await res.text()}`;
+                }
+            } catch (err) {
+                resultDiv.textContent = `❌ 网络错误: ${err.message}`;
+            }
+        });
+    </script>
+</body>
+</html>

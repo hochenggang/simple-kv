@@ -6,6 +6,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"time"
+
+	"golang.org/x/time/rate"
 )
 
 func main() {
@@ -30,10 +33,22 @@ func main() {
 
 	addr := net.JoinHostPort(host, port)
 
-	// corsMiddleware is wrapped outermost so OPTIONS preflight is answered
-	// without going through auth. The chain is: cors -> auth -> mux.
-	handler := corsMiddleware(authMiddleware(mux))
+	// IP 限流池：每 IP 5 req/s，突发 10；池容量 1000，超出 FIFO 淘汰
+	rlPool := newIPRateLimiterPool(1000, rate.Limit(5), 10)
+
+	// 中间件链：CORS（最外，预检短路） -> 限流（未鉴权攻击也被限） -> 鉴权 -> mux
+	handler := corsMiddleware(rateLimitMiddleware(rlPool, authMiddleware(mux)))
+
+	// 显式超时，防止 Slowloris 与慢客户端占满 fd
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadTimeout:       10 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 
 	log.Printf("KV API listening on %s", addr)
-	log.Fatal(http.ListenAndServe(addr, handler))
+	log.Fatal(srv.ListenAndServe())
 }

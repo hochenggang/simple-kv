@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -12,6 +13,10 @@ import (
 func handleGet(w http.ResponseWriter, r *http.Request) {
 	dbName := r.PathValue("db")
 	key := r.PathValue("key")
+	if err := validateName(dbName); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	if err := validateName(key); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -19,7 +24,7 @@ func handleGet(w http.ResponseWriter, r *http.Request) {
 
 	db, err := getDB(dbName)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeDBError(w, err)
 		return
 	}
 
@@ -35,8 +40,9 @@ func handleGet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 命中已过期记录：删除并返回 404
+	// 防御时钟回拨：now 必须晚于 create_at，否则差值为负，过期判断失效
 	now := time.Now().Unix()
-	if timeoutAfter > 0 && now-createAt > timeoutAfter {
+	if timeoutAfter > 0 && now > createAt && now-createAt > timeoutAfter {
 		if _, delErr := db.Exec(`DELETE FROM kv WHERE key = ?`, key); delErr != nil {
 			log.Printf("cleanup on get failed: db=%s key=%s: %v", dbName, key, delErr)
 		}
@@ -51,6 +57,10 @@ func handleGet(w http.ResponseWriter, r *http.Request) {
 func handlePut(w http.ResponseWriter, r *http.Request) {
 	dbName := r.PathValue("db")
 	key := r.PathValue("key")
+	if err := validateName(dbName); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	if err := validateName(key); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -67,16 +77,21 @@ func handlePut(w http.ResponseWriter, r *http.Request) {
 		timeoutAfter = v
 	}
 
-	// 限制请求体大小为 50 KiB
-	body, err := io.ReadAll(io.LimitReader(r.Body, 50*1024))
+	// 限制请求体大小为 50 KiB；超限返回 413 而不是静默截断
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 50*1024))
 	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "failed to read request body", http.StatusBadRequest)
 		return
 	}
 
 	db, err := getDB(dbName)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeDBError(w, err)
 		return
 	}
 
@@ -95,6 +110,10 @@ func handlePut(w http.ResponseWriter, r *http.Request) {
 func handleDelete(w http.ResponseWriter, r *http.Request) {
 	dbName := r.PathValue("db")
 	key := r.PathValue("key")
+	if err := validateName(dbName); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	if err := validateName(key); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -102,7 +121,7 @@ func handleDelete(w http.ResponseWriter, r *http.Request) {
 
 	db, err := getDB(dbName)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeDBError(w, err)
 		return
 	}
 
@@ -119,4 +138,15 @@ func handleDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// writeDBError 将 getDB 的错误按哨兵区分 4xx / 5xx。
+// ErrTooManyDBs 视为客户端责任（用户用了太多 db 名），返回 400；
+// 其他（I/O、磁盘等）视为服务端故障，返回 500。
+func writeDBError(w http.ResponseWriter, err error) {
+	if errors.Is(err, ErrTooManyDBs) {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	http.Error(w, err.Error(), http.StatusInternalServerError)
 }
