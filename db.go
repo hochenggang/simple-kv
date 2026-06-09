@@ -70,7 +70,20 @@ func getDB(name string) (*sql.DB, error) {
 	}
 
 	// 创建 KV 表
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT)`); err != nil {
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS kv (
+		key TEXT PRIMARY KEY,
+		value TEXT,
+		timeout_after INTEGER NOT NULL DEFAULT 0,
+		create_at INTEGER NOT NULL DEFAULT 0
+	)`); err != nil {
+		db.Close()
+		return nil, err
+	}
+
+	// 部分索引：仅覆盖有过期配置的记录，加速清理查询
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_kv_timeout
+		ON kv (timeout_after, create_at)
+		WHERE timeout_after > 0`); err != nil {
 		db.Close()
 		return nil, err
 	}

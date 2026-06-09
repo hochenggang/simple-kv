@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net"
 	"net/http"
@@ -12,6 +13,11 @@ func main() {
 	mux.HandleFunc("GET /{db}/{key}", handleGet)
 	mux.HandleFunc("PUT /{db}/{key}", handlePut)
 	mux.HandleFunc("DELETE /{db}/{key}", handleDelete)
+
+	// 启动后台过期清理（每分钟一次，单库单次最多 1000 条）
+	cleanupCtx, cancelCleanup := context.WithCancel(context.Background())
+	defer cancelCleanup()
+	go startCleanup(cleanupCtx)
 
 	host := os.Getenv("KV_HOST")
 	if host == "" {
